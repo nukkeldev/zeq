@@ -28,7 +28,7 @@ const Tokenizer = struct {
 
     // Errors
 
-    const Error = error{ UnrecognizedToken, TooManyDecimalPoints };
+    const Error = error{ UnrecognizedToken, Number_TooManyDecimalPoints };
 
     // Initialization
 
@@ -47,9 +47,11 @@ const Tokenizer = struct {
         }.f;
 
         switch (self.buffer[self.index]) {
-            0 => { // EOF
+            // EOF
+            0 => {
                 return null;
             },
+            // Numbers
             '0'...'9' => |c| {
                 var token = Token{ .@"#" = @floatFromInt(c - '0') };
                 self.index += 1;
@@ -64,7 +66,7 @@ const Tokenizer = struct {
                     },
                     '.' | ',' => {
                         if (fractional) {
-                            return error.TooManyDecimalPoints;
+                            return error.Number_TooManyDecimalPoints;
                         }
 
                         fractional = true;
@@ -83,6 +85,41 @@ const Tokenizer = struct {
 
                 self.index += 1;
                 return token;
+            },
+            // Plus
+            '+' => {
+                self.index += 1;
+                return .@"+";
+            },
+            // Minus
+            '-' => {
+                self.index += 1;
+                return .@"-";
+            },
+            // Times
+            '*' => {
+                self.index += 1;
+                return .@"*";
+            },
+            // Divide
+            '/' => {
+                self.index += 1;
+                return .@"/";
+            },
+            // Exponent
+            '^' => {
+                self.index += 1;
+                return .@"^";
+            },
+            // Left Parenthese
+            '(' => {
+                self.index += 1;
+                return .@"(";
+            },
+            // Right Parenthese
+            ')' => {
+                self.index += 1;
+                return .@")";
             },
             else => |_| {
                 return Error.UnrecognizedToken;
@@ -129,49 +166,71 @@ const testing = struct {
 
     // Helpers
 
-    pub fn expectApproxEqAbsNullable(comptime T: type, expected: ?T, actual: ?T) !void {
+    pub fn expectApproxEqAbsNullable(expected: ?f32, actual: ?f32) !void {
         if (expected == null or actual == null) try expectEqual(expected, actual);
-        try expectApproxEqAbs(expected.?, actual.?, std.math.floatEps(T));
+        try expectApproxEqAbs(expected.?, actual.?, std.math.floatEps(f32));
+    }
+
+    pub fn expectTokenType(comptime tokenTagName: []const u8, token: Tokenizer.Token) !void {
+        try expect(std.mem.eql(u8, @tagName(token), tokenTagName));
+    }
+
+    pub fn expectTokenTypeNullable(comptime tokenTagName: []const u8, token: ?Tokenizer.Token) !void {
+        try expect(token != null);
+        try expect(std.mem.eql(u8, @tagName(token.?), tokenTagName));
     }
 };
 
 test "numbers" {
-    const e = std.testing.expectEqual;
-    const ef = struct {
-        pub fn f(a: ?f32, b: ?f32) !void {
-            if (a == null or b == null) {
-                try std.testing.expect(a == b);
-            }
-
-            try std.testing.expectApproxEqAbs(a.?, b.?, std.math.floatEps(f32));
-        }
-    }.f;
-
     const t = struct {
         pub fn f(input: [:0]const u8) anyerror!?f32 {
             var tokenizer = Tokenizer.init(input);
             const result = try tokenizer.next_token();
 
             if (result) |token| {
-                if (!std.mem.eql(u8, @tagName(token), "#")) {
-                    return error.NaN;
-                }
-
+                try testing.expectTokenType("#", token);
                 return token.@"#";
             }
 
             return null;
         }
     }.f;
+    const @"=" = testing.expectEqual;
+    const @"~=?" = testing.expectApproxEqAbsNullable;
 
-    try e(t(""), null);
+    try @"="(null, t(""));
 
-    try ef(t("0") catch null, 0.0);
-    try ef(t("0.") catch null, 0.0);
-    try ef(t("0.0") catch null, 0.0);
+    try @"~=?"(0.0, t("0") catch null);
+    try @"~=?"(0.0, t("0.") catch null);
+    try @"~=?"(0.0, t("0.0") catch null);
 
-    try ef(t("1") catch null, 1.0);
-    try ef(t("123") catch null, 123.0);
-    try ef(t("123.") catch null, 123.0);
-    try ef(t("123.456") catch null, 123.456);
+    try @"~=?"(1.0, t("1") catch null);
+    try @"~=?"(123.0, t("123") catch null);
+    try @"~=?"(123.456, t("123.456") catch null);
+}
+
+test "operators" {
+    const t = struct {
+        pub fn f(input: [:0]const u8) Tokenizer.Error!?Tokenizer.Token {
+            var tokenizer = Tokenizer.init(input);
+            return try tokenizer.next_token();
+        }
+    }.f;
+
+    inline for (.{ "+", "-", "*", "/", "^" }) |input| {
+        try testing.expectTokenTypeNullable(input, t(input) catch null);
+    }
+}
+
+test "parantheses" {
+    const t = struct {
+        pub fn f(input: [:0]const u8) Tokenizer.Error!?Tokenizer.Token {
+            var tokenizer = Tokenizer.init(input);
+            return try tokenizer.next_token();
+        }
+    }.f;
+
+    inline for (.{ "(", ")" }) |input| {
+        try testing.expectTokenTypeNullable(input, t(input) catch null);
+    }
 }
