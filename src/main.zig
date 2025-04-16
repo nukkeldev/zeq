@@ -4,7 +4,7 @@ const lib = @import("comptime_string_parsing_lib");
 pub fn main() !void {
     var tokenizer = Tokenizer.init("16.756");
 
-    std.debug.print("{any}", .{tokenizer.next_token()});
+    std.debug.print("{any}", .{tokenizer.nextToken()});
 }
 
 const Tokenizer = struct {
@@ -28,6 +28,11 @@ const Tokenizer = struct {
 
     // Errors
 
+    const Result = struct {
+        err: ?Error = null,
+        err_index: ?usize = null,
+        count: usize = 0,
+    };
     const Error = error{ UnrecognizedToken, Number_TooManyDecimalPoints };
 
     // Initialization
@@ -38,7 +43,7 @@ const Tokenizer = struct {
 
     // Tokenizing
 
-    pub fn next_token(self: *Self) Error!?Token {
+    pub fn nextToken(self: *Self) Error!?Token {
         const inc = struct {
             pub fn f(i: *usize) usize {
                 i.* += 1;
@@ -46,10 +51,14 @@ const Tokenizer = struct {
             }
         }.f;
 
-        switch (self.buffer[self.index]) {
+        out: switch (self.buffer[self.index]) {
             // EOF
             0 => {
                 return null;
+            },
+            // Whitespace
+            ' ', '\t', '\n' => {
+                continue :out self.buffer[inc(&self.index)];
             },
             // Numbers
             '0'...'9' => |c| {
@@ -64,7 +73,7 @@ const Tokenizer = struct {
                         token.@"#" = token.@"#" * 10 + @as(f32, @floatFromInt(n - '0'));
                         continue :s self.buffer[inc(&self.index)];
                     },
-                    '.' | ',' => {
+                    '.' => {
                         if (fractional) {
                             return error.Number_TooManyDecimalPoints;
                         }
@@ -83,7 +92,6 @@ const Tokenizer = struct {
                     token.@"#" = token.@"#" / std.math.pow(f32, 10, @as(f32, @floatFromInt(self.index - i)) - 1);
                 }
 
-                self.index += 1;
                 return token;
             },
             // Plus
@@ -127,24 +135,37 @@ const Tokenizer = struct {
         }
     }
 
-    // pub fn parse(self: *Self) Result {
-    //     tokenize: switch (self.consume().?) {
-    //         null => {
-    //             // We have consumed the entire input.
-    //         },
-    //         '0'...'9' => {
-    //             self.eat();
-    //         },
-    //         else => {},
-    //     }
+    pub fn parse(input: [:0]const u8, output: *[]Token) Result {
+        var self = init(input);
+        var result: Result = .{};
 
-    //     std.debug.print("Parsed: {any}\n", .{self.output[0..self.output_pos]});
+        while (result.count < output.len) {
+            const @"token?" = self.nextToken() catch |e| {
+                result.err = e;
+                result.err_index = self.index;
+                return result;
+            };
 
-    //     return .{ .err = self.err, .tokens = self.output_pos, .parsed = self.output };
-    // }
+            if (@"token?") |token| {
+                output.*[result.count] = token;
+                result.count += 1;
+            } else {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    pub fn parseToArray(comptime MAX_TOKENS: comptime_int, input: [:0]const u8) struct { Result, [MAX_TOKENS]Token } {
+        var out: [MAX_TOKENS]Token = undefined;
+        var slice: []Token = out[0..];
+
+        return .{ Self.parse(input, &slice), out };
+    }
 };
 
-pub fn comptime_parse(comptime string: []const u8) Tokenizer(string.len).Result {
+pub fn comptimeParse(comptime string: []const u8) Tokenizer(string.len).Result {
     // Pass the comptime-known string length to the parsing method.
     return parse(string, string.len);
 }
@@ -157,80 +178,73 @@ pub fn parse(string: []const u8, max_len: comptime_int) Tokenizer(max_len).Resul
 
 // Tests
 
-const testing = struct {
-    // Aliases
-
-    const expect = std.testing.expect;
-    const expectEqual = std.testing.expectEqual;
-    const expectApproxEqAbs = std.testing.expectApproxEqAbs;
-
-    // Helpers
-
-    pub fn expectApproxEqAbsNullable(expected: ?f32, actual: ?f32) !void {
-        if (expected == null or actual == null) try expectEqual(expected, actual);
-        try expectApproxEqAbs(expected.?, actual.?, std.math.floatEps(f32));
-    }
-
-    pub fn expectTokenType(comptime tokenTagName: []const u8, token: Tokenizer.Token) !void {
-        try expect(std.mem.eql(u8, @tagName(token), tokenTagName));
-    }
-
-    pub fn expectTokenTypeNullable(comptime tokenTagName: []const u8, token: ?Tokenizer.Token) !void {
-        try expect(token != null);
-        try expect(std.mem.eql(u8, @tagName(token.?), tokenTagName));
-    }
-};
-
-test "numbers" {
-    const t = struct {
-        pub fn f(input: [:0]const u8) anyerror!?f32 {
-            var tokenizer = Tokenizer.init(input);
-            const result = try tokenizer.next_token();
-
-            if (result) |token| {
-                try testing.expectTokenType("#", token);
-                return token.@"#";
-            }
-
-            return null;
-        }
-    }.f;
-    const @"=" = testing.expectEqual;
-    const @"~=?" = testing.expectApproxEqAbsNullable;
-
-    try @"="(null, t(""));
-
-    try @"~=?"(0.0, t("0") catch null);
-    try @"~=?"(0.0, t("0.") catch null);
-    try @"~=?"(0.0, t("0.0") catch null);
-
-    try @"~=?"(1.0, t("1") catch null);
-    try @"~=?"(123.0, t("123") catch null);
-    try @"~=?"(123.456, t("123.456") catch null);
+fn testTokenization(comptime input: [:0]const u8, expected: anytype) !void {
+    try std.testing.expectEqual(Tokenizer.parseToArray(expected[0].count, input), expected);
 }
 
-test "operators" {
-    const t = struct {
-        pub fn f(input: [:0]const u8) Tokenizer.Error!?Tokenizer.Token {
-            var tokenizer = Tokenizer.init(input);
-            return try tokenizer.next_token();
-        }
-    }.f;
+test "tokenizing" {
+    try testTokenization("", .{
+        Tokenizer.Result{ .count = 0 },
+        [_]Tokenizer.Token{},
+    });
 
-    inline for (.{ "+", "-", "*", "/", "^" }) |input| {
-        try testing.expectTokenTypeNullable(input, t(input) catch null);
-    }
-}
+    // Numbers
 
-test "parantheses" {
-    const t = struct {
-        pub fn f(input: [:0]const u8) Tokenizer.Error!?Tokenizer.Token {
-            var tokenizer = Tokenizer.init(input);
-            return try tokenizer.next_token();
-        }
-    }.f;
+    try testTokenization("1", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.{ .@"#" = 1.0 }},
+    });
+    try testTokenization("1.", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.{ .@"#" = 1.0 }},
+    });
+    try testTokenization("12", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.{ .@"#" = 12.0 }},
+    });
+    try testTokenization("12.3", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.{ .@"#" = 12.3 }},
+    });
 
-    inline for (.{ "(", ")" }) |input| {
-        try testing.expectTokenTypeNullable(input, t(input) catch null);
-    }
+    // Operators
+
+    try testTokenization("+", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"+"},
+    });
+    try testTokenization("-", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"-"},
+    });
+    try testTokenization("*", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"*"},
+    });
+    try testTokenization("/", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"/"},
+    });
+    try testTokenization("^", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"^"},
+    });
+
+    // Parentheses
+
+    try testTokenization("(", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@"("},
+    });
+    try testTokenization(")", .{
+        Tokenizer.Result{ .count = 1 },
+        [_]Tokenizer.Token{.@")"},
+    });
+
+    // Multiple
+
+    try testTokenization("(1 + 1 / 2)", .{
+        Tokenizer.Result{ .count = 7 },
+        [_]Tokenizer.Token{ .@"(", .{ .@"#" = 1.0 }, .@"+", .{ .@"#" = 1.0 }, .@"/", .{ .@"#" = 2.0 }, .@")" },
+    });
 }
